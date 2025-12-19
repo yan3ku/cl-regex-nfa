@@ -27,7 +27,7 @@
        (list :alt (nreverse out) (parse-regex-rec (1+ depth) '() nil)))
       ((and (not escaped) (is-op ch))
        (parse-regex-rec depth
-                        (append (list (list (car out)) (cdr (assoc ch op-keyword))) (cdr out))
+                        (append (list (car out) (cdr (assoc ch op-keyword))) (cdr out))
                         nil))
       ((eql ch #\()
        (let ((subregex (parse-regex-rec (1+ depth) '() nil)))
@@ -42,32 +42,27 @@
     (parse-regex-rec 0 '() nil)))
 
 (defvar *dangling* nil)
-(defvar *saved-dangling* nil)
+(defvar *new-dangling* nil)
 
 (defmacro save-danglings (&body body)
-  "Save current dangling value for next patch-saved-dangling call.
-After body finishes overwrite the *dangling* with danglings collected inside body.
-The most recent danglings (the ondes collected from inside body) are the ones that should be patched next,
-higher in call stack of compile-nfa. e.g: for a(bc)d the dangling for c should be saved when exiting the (bc) group so it will be patched to d."
-  `(setf *dangling* (let ((*saved-dangling* *dangling*)
-                          (*dangling* nil))
-                      ,@body
-                      *dangling*)))
+  "Use collected danglings until now for next patch."
+  `(let ((*dangling* *new-dangling*))
+     (setf *new-dangling* nil)
+     ,@body))
 
-(defun patch-saved-danglings (state)
-  "Set transition of dangling arrow to state."
-  (dolist (out *saved-dangling*)
+(defun patch-danglings (state)
+  "Set transition of (saved) danglings to state."
+  (dolist (out *dangling*)
     (rplacd out state)))
 
 (defgeneric compile-nfa (kind rest)
   (:documentation "Build NFA from sexp representing regex in prefix form:
-(:ALT (:STAR (#\e) #\a) (:OPTION (#\a))) for e*a|a?
+(:ALT (:STAR #\e #\a) (#\a)) for e*a|a?
 Return the start state.")
   (:method :around ((kind character) (rest (eql nil))) ; the last character to compile (dangling arrow)
     (let ((last (call-next-method kind rest)))
-      ;; save the dangling arrows
-      (loop :for trans :in (state-trans last) :do
-        (push trans *dangling*))
+      (assert (= 1 (length (state-trans last))))
+      (push (car (state-trans last)) *new-dangling*) ;save it
       last))
   (:method ((kind character) rest)
     (make-state
@@ -82,7 +77,7 @@ Return the start state.")
       (let ((follow-nfa nil))
         (save-danglings
           (setf follow-nfa (compile-nfa (cadr rest) (cddr rest))) ;following nfa
-          (patch-saved-danglings follow-nfa))
+          (patch-danglings follow-nfa))
         (make-state
          (cons t option-nfa)
          (cons t follow-nfa)))))
@@ -91,17 +86,18 @@ Return the start state.")
       (add-trans start (cons t (compile-nfa (car rest) nil))) ;repetition nfa
       (save-danglings
         (add-trans start (cons t (compile-nfa (cadr rest) (cddr rest)))) ;following nfa (when skipped)
-        (patch-saved-danglings start))
+        (patch-danglings start))
       start))
   (:method ((kind list) rest)           ;(abc)d - new regex group
     ;; this is regex group followed by something that will be compiled and linked (patched) to the group
     (let ((start (compile-nfa (car kind) (cdr kind))))
       (save-danglings
         (let ((tail (compile-nfa (car rest) (cdr rest))))
-          (patch-saved-danglings tail)))
+          (patch-danglings tail)))
       start))
   (:method ((kind list) (rest (eql nil))) ;dont override danglings for :option (#\a)
     (let ((start (compile-nfa (car kind) (cdr kind))))
+      (print kind)
       start))
   (:method ((kind (eql nil)) rest)      ;end of regex
     :end))
@@ -134,4 +130,5 @@ Return the start state.")
 
 (defun compile-regex (regex)
   (let ((*dangling* nil))
+    (print (parse-regex regex))
     (compile-nfa (parse-regex regex) nil)))
