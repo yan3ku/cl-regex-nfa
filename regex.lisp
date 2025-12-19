@@ -61,7 +61,8 @@ higher in call stack of compile-nfa. e.g: for a(bc)d the dangling for c should b
 
 (defgeneric compile-nfa (kind rest)
   (:documentation "Build NFA from sexp representing regex in prefix form:
-(:ALT (:STAR (#\e) #\a) (:OPTION (#\a))) for e*a|a?")
+(:ALT (:STAR (#\e) #\a) (:OPTION (#\a))) for e*a|a?
+Return the start state.")
   (:method :around ((kind character) (rest (eql nil))) ; the last character to compile (dangling arrow)
     (let ((last (call-next-method kind rest)))
       ;; save the dangling arrows
@@ -71,37 +72,38 @@ higher in call stack of compile-nfa. e.g: for a(bc)d the dangling for c should b
   (:method ((kind character) rest)
     (make-state
      (cons kind (compile-nfa (car rest) (cdr rest)))))
-  (:method ((kind (eql :option)) rest)  ;e?
-    (let ((start (compile-nfa (car rest) (cdar rest))))
-      (let ((next-nfa nil))
-        (save-danglings
-          (setf next-nfa (compile-nfa (cadr rest) (cddr rest)))
-          (patch-saved-danglings next-nfa))
-        (make-state
-         (cons t start)
-         (cons t next-nfa)))))
   (:method ((kind (eql :alt)) rest)     ;e|e
-    (let ((start (make-state)))
+    (let ((start (make-state)))         ;compile as separate nfa
       (dolist (sub rest)
         (add-trans start (cons t (compile-nfa (car sub) (cdr sub)))))
       start))
-  (:method ((kind list) (rest (eql nil)))
-    (let ((start (compile-nfa (car kind) (cdr kind))))
+  (:method ((kind (eql :option)) rest)  ;e?
+    (let ((option-nfa (compile-nfa (car rest) nil))) ;optional nfa
+      (let ((follow-nfa nil))
+        (save-danglings
+          (setf follow-nfa (compile-nfa (cadr rest) (cddr rest))) ;following nfa
+          (patch-saved-danglings follow-nfa))
+        (make-state
+         (cons t option-nfa)
+         (cons t follow-nfa)))))
+  (:method ((kind (eql :star)) rest)    ;e*
+    (let ((start (make-state)))
+      (add-trans start (cons t (compile-nfa (car rest) nil))) ;repetition nfa
+      (save-danglings
+        (add-trans start (cons t (compile-nfa (cadr rest) (cddr rest)))) ;following nfa (when skipped)
+        (patch-saved-danglings start))
       start))
-  (:method ((kind list) rest)
+  (:method ((kind list) rest)           ;(abc)d - new regex group
+    ;; this is regex group followed by something that will be compiled and linked (patched) to the group
     (let ((start (compile-nfa (car kind) (cdr kind))))
       (save-danglings
         (let ((tail (compile-nfa (car rest) (cdr rest))))
           (patch-saved-danglings tail)))
       start))
-  (:method ((kind (eql :star)) rest)    ;e*
-    (let ((start (make-state)))
-      (add-trans start (cons t (compile-nfa (car rest) (cdar rest))))
-      (save-danglings
-        (add-trans start (cons t (compile-nfa (cadr rest) (cddr rest))))
-        (patch-saved-danglings start))
+  (:method ((kind list) (rest (eql nil))) ;dont override danglings for :option (#\a)
+    (let ((start (compile-nfa (car kind) (cdr kind))))
       start))
-  (:method ((kind (eql nil)) rest)
+  (:method ((kind (eql nil)) rest)      ;end of regex
     :end))
 
 (defun find-reachable (ch edges)
