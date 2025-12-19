@@ -97,38 +97,50 @@ Return the start state.")
       start))
   (:method ((kind list) (rest (eql nil))) ;dont override danglings for :option (#\a)
     (let ((start (compile-nfa (car kind) (cdr kind))))
-      (print kind)
+      ;; (print kind)
       start))
   (:method ((kind (eql nil)) rest)      ;end of regex
     :end))
 
-(defun find-reachable (ch edges)
-  "Return list of reachable edges for (ch)aracter in directed graph."
+(defgeneric skip-t (trans)
+  (:method ((trans (eql :end)))
+    (list (cons t :end)))
+  (:method ((trans state))
+    (skip-t (state-trans trans)))
+  (:method ((trans list))
+    (let ((reachable))
+      (dolist (acons trans reachable)
+        (if (eql t (car acons))
+            (dolist (found (skip-t (cdr acons)))
+              (push found reachable))
+            (push acons reachable))))))
+
+(defun find-reachable (ch states)
   (let ((reachable))
-    (dolist (trans edges reachable)
-      (if (eql t (car trans))
-          (if (eql (cdr trans) :end)
-              (push :end reachable)
-              (let ((follow (find-reachable ch (state-trans (cdr trans)))))
-                (setf reachable (append reachable follow))))
-          (when (eql ch (car trans))
-            (if (eql (cdr trans) :end)
-                (push :end reachable)
-                (setf reachable (append reachable (state-trans (cdr trans))))))))))
+    (dolist (state states reachable)
+      (dolist (found (skip-t state))
+        (when (or (eql (car found) ch) (eql (car found) t))
+          (push (cdr found) reachable))))))
 
 (defun match (regex str)
   "Execute the NFA."
-  (if (member :end (find-reachable t (state-trans regex))) ;check if empty input matches
-      t
-      (loop
-        :for ch :across str
-        :for reachable = (find-reachable ch (state-trans regex))
-          :then (find-reachable ch reachable)
-        :when (member :end reachable) :do
-          (return t)
-        :while reachable)))
+  (loop
+    :for i :from 0
+    :for ch :across str
+    :for reachable = (find-reachable ch (list regex))
+      :then (find-reachable ch reachable)
+    :when (member :end (find-reachable t reachable)) :do
+      (return i)
+    :while reachable))
+
+(defun scan (regex-str str)
+  (loop
+    :with regex = (compile-regex regex-str)
+    :for i :from 0 :to (length str) :do
+      (let ((end (match regex (subseq str i))))
+        (when end
+          (return (cons i (+ i end)))))))
 
 (defun compile-regex (regex)
   (let ((*dangling* nil))
-    (print (parse-regex regex))
     (compile-nfa (parse-regex regex) nil)))
