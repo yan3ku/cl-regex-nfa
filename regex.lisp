@@ -2,7 +2,8 @@
 
 (in-package #:regex)
 
-(defstruct (state (:constructor make-state (&rest trans)))
+(defstruct (state
+            (:constructor make-state (&rest trans)))
   trans)
 
 (defun add-trans (state trans)
@@ -16,6 +17,8 @@
 (defun is-op (chr)  (assoc chr op-keyword))
 (defun is-sym (chr) (not (is-op chr)))
 
+
+;;; PARSER
 (defvar *regex-stream* nil)
 
 (defun parse-regex-rec (depth out escaped)
@@ -41,6 +44,8 @@
   (with-input-from-string (*regex-stream* regex)
     (parse-regex-rec 0 '() nil)))
 
+
+;;; COMPILATION
 (defvar *dangling* nil)
 (defvar *new-dangling* nil)
 
@@ -102,6 +107,8 @@ Return the start state.")
   (:method ((kind (eql nil)) rest)      ;end of regex
     :end))
 
+
+;;; EXECUTION
 (defgeneric skip-t (trans)
   (:method ((trans (eql :end)))
     (list (cons t :end)))
@@ -139,7 +146,7 @@ Return the start state.")
     :for i :from 0 :to (length str) :do
       (let ((end (match regex (subseq str i))))
         (when end
-          (return (cons i (+ i end)))))))
+          (return (cons i (+ 1 i end)))))))
 
 (defun compile-regex (regex)
   (let ((*dangling* nil))
