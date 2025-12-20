@@ -10,18 +10,19 @@
 (defun add-trans (state trans)
   (setf (state-trans state) (append (state-trans state) (list trans))))
 
-(defvar op-keyword
+(defvar operator-char
   '((#\*   . :star)
-    (#\?   . :qmark)
-    (#\|   . :pipe)))
+    (#\?   . :qmark))
+  "List of postfix operators.")
 
-(defvar special-keyword
+(defvar special-char
   '((#\^  . :caret)
     (#\$  . :dolar)
-    (#\.  . :dot)))
+    (#\.  . :dot))
+  "List of special characters in regex.")
 
-(defun is-op (chr)  (assoc chr op-keyword))
-(defun is-spec (chr)(assoc chr special-keyword))
+(defun is-op (chr)  (assoc chr operator-char))
+(defun is-spec (chr)(assoc chr special-char))
 (defun is-sym (chr) (not (is-op chr)))
 
 
@@ -47,12 +48,12 @@
       ((not escaped)
        (cond
          ((is-spec ch)
-          (parse-regex-rec depth (cons (cdr (assoc ch special-keyword)) out)))
+          (parse-regex-rec depth (cons (cdr (assoc ch special-char)) out)))
          ((eql ch #\|)
           (list :pipe (nreverse out) (parse-regex-rec depth '())))
          ((is-op ch)
           (parse-regex-rec depth
-                           (append (list (car out) (cdr (assoc ch op-keyword))) (cdr out))
+                           (append (list (car out) (cdr (assoc ch operator-char))) (cdr out))
                            nil))
          (t (parse-regex-rec depth (cons ch out)))))
       (t    (parse-regex-rec depth (cons ch out))))))
