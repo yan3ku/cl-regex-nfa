@@ -57,26 +57,36 @@
 
 (defun patch-danglings (state)
   "Set transition of (saved) danglings to state."
-  (dolist (out *dangling*)
-    (rplacd out state)))
+  (if (eql state :end)
+      (setf *new-dangling* *dangling*)
+      (dolist (out *dangling*)
+        (rplacd out state))))
+
+(defgeneric make-trans (cond state)
+  (:documentation "Make transition and if reached ending state register it in *dangling* for patching.")
+  (:method (cond state)
+    (cons cond state))
+  (:method :around (cond (state (eql :end)))
+    (let ((cons (call-next-method cond state)))
+      (push cons *new-dangling*) ;save it
+      cons)))
 
 (defgeneric compile-nfa (kind rest)
   (:documentation "Build NFA from sexp representing regex in prefix form:
 (:ALT (:STAR #\e #\a) (#\a)) for e*a|a?
 Return the start state.")
-  (:method :around ((kind character) (rest (eql nil))) ; the last character to compile (dangling arrow)
-    (let ((last (call-next-method kind rest)))
-      (assert (= 1 (length (state-trans last))))
-      (push (car (state-trans last)) *new-dangling*) ;save it
-      last))
   (:method ((kind character) rest)
     (make-state
-     (cons kind (compile-nfa (car rest) (cdr rest)))))
+     (make-trans kind (compile-nfa (car rest) (cdr rest)))))
   (:method ((kind (eql :alt)) rest)     ;e|e
-    (let ((start (make-state)))         ;compile as separate nfa
-      (dolist (sub rest)
-        (add-trans start (cons t (compile-nfa (car sub) (cdr sub)))))
-      start))
+    (let ((join-dangling))              ; the dangling out is the concatenation of each sub-regex danglings
+      (let ((start (make-state)))        ;compile as separate nfa
+        (dolist (sub rest)
+          (add-trans start (make-trans t (compile-nfa (car sub) (cdr sub))))
+          (setf join-dangling (append join-dangling *new-dangling*))
+          (setf *new-dangling* nil))
+        (setf *new-dangling* join-dangling)
+        start)))
   (:method ((kind (eql :option)) rest)  ;e?
     (let ((option-nfa (compile-nfa (car rest) nil))) ;optional nfa
       (let ((follow-nfa nil))
@@ -84,25 +94,23 @@ Return the start state.")
           (setf follow-nfa (compile-nfa (cadr rest) (cddr rest))) ;following nfa
           (patch-danglings follow-nfa))
         (make-state
-         (cons t option-nfa)
-         (cons t follow-nfa)))))
+         (make-trans t option-nfa)
+         (make-trans t follow-nfa)))))
   (:method ((kind (eql :star)) rest)    ;e*
     (let ((start (make-state)))
-      (add-trans start (cons t (compile-nfa (car rest) nil))) ;repetition nfa
+      (add-trans start (make-trans t (compile-nfa (car rest) nil))) ;repetition nfa
       (save-danglings
-        (add-trans start (cons t (compile-nfa (cadr rest) (cddr rest)))) ;following nfa (when skipped)
+        (add-trans start (make-trans t (compile-nfa (cadr rest) (cddr rest)))) ;following nfa (when skipped)
         (patch-danglings start))
       start))
   (:method ((kind list) rest)           ;(abc)d - new regex group
     ;; this is regex group followed by something that will be compiled and linked (patched) to the group
+    ;; if rest is nil this can result in lost of danglings for kind expression, that's why we need guard
     (let ((start (compile-nfa (car kind) (cdr kind))))
-      (save-danglings
-        (let ((tail (compile-nfa (car rest) (cdr rest))))
-          (patch-danglings tail)))
-      start))
-  (:method ((kind list) (rest (eql nil))) ;dont override danglings for :option (#\a)
-    (let ((start (compile-nfa (car kind) (cdr kind))))
-      ;; (print kind)
+      (when rest
+        (save-danglings
+          (let ((tail (compile-nfa (car rest) (cdr rest))))
+            (patch-danglings tail))))
       start))
   (:method ((kind (eql nil)) rest)      ;end of regex
     :end))
@@ -129,7 +137,7 @@ Return the start state.")
         (when (or (eql (car found) ch) (eql (car found) t))
           (push (cdr found) reachable))))))
 
-(defun match (regex str)
+(defun match-regex (regex str)
   "Execute the NFA."
   (loop
     :for i :from 0
@@ -144,10 +152,15 @@ Return the start state.")
   (loop
     :with regex = (compile-regex regex-str)
     :for i :from 0 :to (length str) :do
-      (let ((end (match regex (subseq str i))))
+      (let ((end (match-regex regex (subseq str i))))
         (when end
           (return (cons i (+ 1 i end)))))))
 
+(defun scanstr (regex-str str)
+  (let ((found (scan regex-str str)))
+    (when found
+      (subseq str (car found) (cdr found)))))
+
 (defun compile-regex (regex)
-  (let ((*dangling* nil))
+  (let ((*new-dangling* nil))
     (compile-nfa (parse-regex regex) nil)))
