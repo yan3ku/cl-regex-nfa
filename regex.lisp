@@ -4,6 +4,7 @@
 
 (defstruct (state
             (:constructor make-state (&rest trans)))
+  "State which list of (cond . state) pairs representing edges in the directed graph of NFA. cond of T is used for epsilon transition."
   trans)
 
 (defun add-trans (state trans)
@@ -121,36 +122,45 @@ Return the start state.")
 
 
 ;;; EXECUTION
-(defgeneric skip-t (trans)
-  (:method ((trans (eql :end)))
+(defvar *visited* nil)
+
+(defgeneric skip-epsilon (states)
+  (:documentation "From list of states return list of terminal edges when following the epsilon transition.")
+  (:method ((state (eql :end)))
     (list (cons t :end)))
-  (:method ((trans state))
-    (skip-t (state-trans trans)))
+  (:method ((state state))
+    (if (gethash state *visited*)
+        nil
+        (progn
+          (setf (gethash state *visited*) t)
+          (skip-epsilon (state-trans state)))))
   (:method ((trans list))
     (let ((reachable))
       (dolist (acons trans reachable)
         (if (eql t (car acons))
-            (dolist (found (skip-t (cdr acons)))
+            (dolist (found (skip-epsilon (cdr acons)))
               (push found reachable))
             (push acons reachable))))))
 
-(defun find-reachable (ch states)
+(defun get-reachable (ch states)
   (let ((reachable))
     (dolist (state states reachable)
-      (dolist (found (skip-t state))
-        (when (or (eql (car found) ch) (eql (car found) t))
-          (push (cdr found) reachable))))))
+      (let ((*visited* (make-hash-table)))
+        (dolist (found (skip-epsilon state))
+          (when (or (eql (car found) ch) (eql (car found) t))
+            (push (cdr found) reachable)))))))
 
 (defun match-regex (regex str)
   "Execute the NFA."
-  (loop
-    :for i :from 0
-    :for ch :across str
-    :for reachable = (find-reachable ch (list regex))
-      :then (find-reachable ch reachable)
-    :when (member :end (find-reachable t reachable)) :do
-      (return i)
-    :while reachable))
+  (if (member :end (get-reachable t (list regex)))
+      -1
+      (loop
+        :for i :from 0
+        :for ch :across str
+        :for reachable = (get-reachable ch (list regex)) :then (get-reachable ch reachable)
+        :when (member :end (get-reachable t reachable)) :do
+          (return i)
+        :while reachable)))
 
 (defun scan (regex-str str)
   (loop
