@@ -12,40 +12,55 @@
 
 (defvar op-keyword
   '((#\*   . :star)
-    (#\?   . :option)
-    (#\|   . :alt)))
+    (#\?   . :qmark)
+    (#\|   . :pipe)))
+
+(defvar special-keyword
+  '((#\^  . :caret)
+    (#\$  . :dolar)
+    (#\.  . :dot)))
 
 (defun is-op (chr)  (assoc chr op-keyword))
+(defun is-spec (chr)(assoc chr special-keyword))
 (defun is-sym (chr) (not (is-op chr)))
 
 
 ;;; PARSER
 (defvar *regex-stream* nil)
 
-(defun parse-regex-rec (depth out escaped)
+(defun parse-regex-rec (depth out &optional (escaped nil))
   (let ((ch (read-char *regex-stream* nil)))
     (cond
       ((and (eql ch #\)) (zerop depth))
        (error "unbalanced closing parantheses"))
       ((and (null ch) (not (zerop depth)))
        (error "unbalanced opening parantheses"))
-      ((and (not escaped) (eql ch #\|))
-       (list :alt (nreverse out) (parse-regex-rec (1+ depth) '() nil)))
-      ((and (not escaped) (is-op ch))
-       (parse-regex-rec depth
-                        (append (list (car out) (cdr (assoc ch op-keyword))) (cdr out))
-                        nil))
       ((eql ch #\()
-       (let ((subregex (parse-regex-rec (1+ depth) '() nil)))
-         (parse-regex-rec depth (cons subregex out) escaped)))
+       (let ((subregex (parse-regex-rec (1+ depth) '())))
+         (parse-regex-rec depth (cons subregex out))))
+      ((and (eql ch #\\))
+       (parse-regex-rec depth
+                        (if escaped (cons #\\ out) out)
+                        (not escaped)))
       ((or (null ch) (eql ch #\)))
        (nreverse out))
-      (t (parse-regex-rec depth (cons ch out) nil)))))
+      ((not escaped)
+       (cond
+         ((is-spec ch)
+          (parse-regex-rec depth (cons (cdr (assoc ch special-keyword)) out)))
+         ((eql ch #\|)
+          (list :pipe (nreverse out) (parse-regex-rec depth '())))
+         ((is-op ch)
+          (parse-regex-rec depth
+                           (append (list (car out) (cdr (assoc ch op-keyword))) (cdr out))
+                           nil))
+         (t (parse-regex-rec depth (cons ch out)))))
+      (t    (parse-regex-rec depth (cons ch out))))))
 
 (defun parse-regex (regex)
   "Parse regex string to prefix Sexp."
   (with-input-from-string (*regex-stream* regex)
-    (parse-regex-rec 0 '() nil)))
+    (parse-regex-rec 0 '())))
 
 
 ;;; COMPILATION
@@ -78,12 +93,12 @@ The cdr is already :end so this would only result in lost of the danglings and n
 
 (defgeneric compile-nfa (kind rest)
   (:documentation "Build NFA from sexp representing regex in prefix form:
-(:ALT (:STAR #\e #\a) (#\a)) for e*a|a?
+(:PIPE (:STAR #\e #\a) (#\a)) for e*a|a?
 Return the start state.")
   (:method ((kind character) rest)
     (make-state
      (make-trans kind (compile-nfa (car rest) (cdr rest)))))
-  (:method ((kind (eql :alt)) rest)     ;e|e
+  (:method ((kind (eql :pipe)) rest)     ;e|e
     (let ((join-dangling))              ; the dangling out is the concatenation of each sub-regex danglings
       (let ((start (make-state)))        ;compile as separate nfa
         (dolist (sub rest)
@@ -92,14 +107,20 @@ Return the start state.")
           (setf *new-dangling* nil))
         (setf *new-dangling* join-dangling)
         start)))
-  (:method ((kind (eql :option)) rest)  ;e?
-    (let ((option-nfa (compile-nfa (car rest) nil))) ;optional nfa
+  (:method ((kind (eql :caret)) rest)
+    (make-state (make-trans :sof (compile-nfa (car rest) (cdr rest)))))
+  (:method ((kind (eql :dolar)) rest)
+    (make-state (make-trans :eof (compile-nfa (car rest) (cdr rest)))))
+  (:method ((kind (eql :dot)) rest)
+    (make-state (make-trans :alpha (compile-nfa (car rest) (cdr rest)))))
+  (:method ((kind (eql :qmark)) rest)  ;e?
+    (let ((qmark-nfa (compile-nfa (car rest) nil))) ;optional nfa
       (let ((follow-nfa nil))
         (save-danglings
           (setf follow-nfa (compile-nfa (cadr rest) (cddr rest))) ;following nfa
           (patch-danglings follow-nfa))
         (make-state
-         (make-trans t option-nfa)
+         (make-trans t qmark-nfa)
          (make-trans t follow-nfa)))))
   (:method ((kind (eql :star)) rest)    ;e*
     (let ((start (make-state)))
@@ -147,18 +168,25 @@ Return the start state.")
     (dolist (state states reachable)
       (let ((*visited* (make-hash-table)))
         (dolist (found (skip-epsilon state))
-          (when (or (eql (car found) ch) (eql (car found) t))
-            (push (cdr found) reachable)))))))
+          (cond
+            ((and (eql (car found) :alpha) (characterp ch) (alpha-char-p ch))
+             (push (cdr found) reachable))
+            ((or (eql (car found) ch) (eql (car found) t))
+             (push (cdr found) reachable))))))))
 
-(defun match-regex (regex str)
+(defun reached-end-p (reachable eof-p)
+  (member :end (append (get-reachable t reachable)
+                       (and eof-p (get-reachable :eof reachable)))))
+
+(defun match-regex (regex str &key (start 0) (end (1- (length str))))
   "Execute the NFA."
   (if (member :end (get-reachable t (list regex)))
       -1
       (loop
-        :for i :from 0
-        :for ch :across str
+        :for i :from start :upto end
+        :for ch = (aref str i)
         :for reachable = (get-reachable ch (list regex)) :then (get-reachable ch reachable)
-        :when (member :end (get-reachable t reachable)) :do
+        :when (reached-end-p reachable (= i end)) :do
           (return i)
         :while reachable)))
 
