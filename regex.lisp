@@ -56,7 +56,9 @@
      ,@body))
 
 (defun patch-danglings (state)
-  "Set transition of (saved) danglings to state."
+  "Set transition of (saved) danglings to state.
+When reached ending state eg: for (d*|) we need to save the danglings of the d* expression.
+The cdr is already :end so this would only result in lost of the danglings and nfa ending too fast."
   (if (eql state :end)
       (setf *new-dangling* *dangling*)
       (dolist (out *dangling*)
