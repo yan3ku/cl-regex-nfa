@@ -25,7 +25,9 @@
   (let ((ch (read-char *regex-stream* nil)))
     (cond
       ((and (eql ch #\)) (zerop depth))
-       (error "unbalanced parantheses"))
+       (error "unbalanced closing parantheses"))
+      ((and (null ch) (not (zerop depth)))
+       (error "unbalanced opening parantheses"))
       ((and (not escaped) (eql ch #\|))
        (list :alt (nreverse out) (parse-regex-rec (1+ depth) '() nil)))
       ((and (not escaped) (is-op ch))
