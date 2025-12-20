@@ -98,6 +98,9 @@ Return the start state.")
   (:method ((kind character) rest)
     (make-state
      (make-trans kind (compile-nfa (car rest) (cdr rest)))))
+  (:method ((kind symbol) rest)
+    (make-state
+     (make-trans kind (compile-nfa (car rest) (cdr rest)))))
   (:method ((kind (eql :pipe)) rest)     ;e|e
     (let ((join-dangling))              ; the dangling out is the concatenation of each sub-regex danglings
       (let ((start (make-state)))        ;compile as separate nfa
@@ -107,12 +110,6 @@ Return the start state.")
           (setf *new-dangling* nil))
         (setf *new-dangling* join-dangling)
         start)))
-  (:method ((kind (eql :caret)) rest)
-    (make-state (make-trans :sof (compile-nfa (car rest) (cdr rest)))))
-  (:method ((kind (eql :dolar)) rest)
-    (make-state (make-trans :eof (compile-nfa (car rest) (cdr rest)))))
-  (:method ((kind (eql :dot)) rest)
-    (make-state (make-trans :alpha (compile-nfa (car rest) (cdr rest)))))
   (:method ((kind (eql :qmark)) rest)  ;e?
     (let ((qmark-nfa (compile-nfa (car rest) nil))) ;optional nfa
       (let ((follow-nfa nil))
@@ -145,7 +142,7 @@ Return the start state.")
 ;;; EXECUTION
 (defvar *visited* nil)
 
-(defgeneric skip-epsilon (states)
+(defgeneric follow-epsilon (states)
   (:documentation "From list of states return list of terminal edges when following the epsilon transition.")
   (:method ((state (eql :end)))
     (list (cons t :end)))
@@ -154,49 +151,60 @@ Return the start state.")
         nil
         (progn
           (setf (gethash state *visited*) t)
-          (skip-epsilon (state-trans state)))))
+          (follow-epsilon (state-trans state)))))
   (:method ((trans list))
     (let ((reachable))
       (dolist (acons trans reachable)
         (if (eql t (car acons))
-            (dolist (found (skip-epsilon (cdr acons)))
+            (dolist (found (follow-epsilon (cdr acons)))
               (push found reachable))
             (push acons reachable))))))
 
-(defun get-reachable (ch states)
+(defun follow (cond states &key start-p end-p)
+  "Return list of states that are reachable following epsilon transitions and then consuming the character."
   (let ((reachable))
     (dolist (state states reachable)
       (let ((*visited* (make-hash-table)))
-        (dolist (found (skip-epsilon state))
+        (dolist (found (follow-epsilon state))
           (cond
-            ((and (eql (car found) :alpha) (characterp ch) (alpha-char-p ch))
+            ((and (eql (car found) :dolar) end-p)
+             (setf reachable (append reachable
+                                     (follow cond (list (cdr found)) :start-p nil :end-p end-p))))
+            ((and (eql (car found) :caret) start-p)
+             (setf reachable (append reachable
+                                     (follow cond (list (cdr found)) :start-p nil :end-p end-p))))
+            ((and (eql (car found) :dot) (characterp cond) (alpha-char-p cond))
              (push (cdr found) reachable))
-            ((or (eql (car found) ch) (eql (car found) t))
+            ((eql (car found) cond)
              (push (cdr found) reachable))))))))
 
-(defun reached-end-p (reachable eof-p)
-  (member :end (append (get-reachable t reachable)
-                       (and eof-p (get-reachable :eof reachable)))))
+(defun reached-end-p (states &key start-p end-p)
+  (member :end (append (follow t states :start-p start-p :end-p end-p))))
 
 (defun match-regex (regex str &key (start 0) (end (1- (length str))))
-  "Execute the NFA."
-  (if (member :end (get-reachable t (list regex)))
-      -1
-      (loop
-        :for i :from start :upto end
-        :for ch = (aref str i)
-        :for reachable = (get-reachable ch (list regex)) :then (get-reachable ch reachable)
-        :when (reached-end-p reachable (= i end)) :do
-          (return i)
-        :while reachable)))
+  (let ((last-success nil))
+    (if (reached-end-p (list regex) :start-p t :end-p nil)
+        (setf last-success -1))         ;matches empty string
+    (loop
+      :for i :from start :upto end
+      :for ch = (aref str i)
+      :for start-p = (= i start)
+      :for end-p   = (= i end)
+      :for reachable = (follow ch (list regex) :start-p start-p :end-p end-p)
+        :then (follow ch reachable :start-p start-p :end-p end-p)
+      :while reachable
+      :when (reached-end-p reachable :start-p start-p :end-p end-p) :do
+        (setf last-success (1+ i))
+      :do (setf reachable (remove :end reachable)))
+    last-success))
 
 (defun scan (regex-str str)
   (loop
     :with regex = (compile-regex regex-str)
     :for i :from 0 :to (length str) :do
-      (let ((end (match-regex regex (subseq str i))))
-        (when end
-          (return (cons i (+ 1 i end)))))))
+      (let ((end (match-regex regex str :start i)))
+        (when (and end (plusp end))
+          (return (cons i end))))))
 
 (defun scanstr (regex-str str)
   (let ((found (scan regex-str str)))
